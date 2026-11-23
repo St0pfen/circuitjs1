@@ -1,0 +1,9 @@
+* common-emitter stage, biased from the input pin
+.subckt ce-amp in out
+vcc vcc 0 dc 12
+v1 in 0 dc 2
+rb in b 100k
+rc vcc out 2k2
+q1 out b 0 q2n2222
+.model q2n2222 npn (is=1e-14 bf=200 vaf=100)
+.ends

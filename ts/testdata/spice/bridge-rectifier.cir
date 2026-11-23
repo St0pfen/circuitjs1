@@ -1,0 +1,10 @@
+* full-wave bridge into a load
+.subckt bridge ac plus minus
+v1 ac 0 dc 10
+d1 ac plus dm
+d2 0 plus dm
+d3 minus ac dm
+d4 minus 0 dm
+rl plus minus 1k
+.model dm d (is=1e-14 n=1)
+.ends

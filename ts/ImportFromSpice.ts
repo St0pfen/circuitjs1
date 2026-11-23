@@ -263,6 +263,11 @@ export function parseSpiceNetlist(text: string): SpiceNetlist {
             continue;
         }
 
+        // a directive we do not handle: say so instead of reading it as an element
+        // named "." with an unknown type
+        if (first.startsWith("."))
+            throw new SpiceParseError(`directive "${first}" is not supported`, ll.line);
+
         const type = first.charAt(0);
         for (const node of readElementNodes(type, st, first, ll.line).nodes)
             addNode(node);

@@ -1,0 +1,7 @@
+* current mirror built from a CCCS
+.subckt mirror in out
+v1 in 0 dc 1
+r1 in 0 1k
+f1 out 0 v1 2
+r2 out 0 1k
+.ends

@@ -1,0 +1,13 @@
+* differential pair with a tail resistor
+.subckt diffpair in1 in2 out
+vcc vcc 0 dc 12
+vee vee 0 dc -12
+v1 in1 0 dc 1.0
+v2 in2 0 dc 0.9
+rc1 vcc out 4k7
+rc2 vcc out2 4k7
+q1 out in1 e qmod
+q2 out2 in2 e qmod
+re e vee 10k
+.model qmod npn (is=1e-14 bf=100)
+.ends

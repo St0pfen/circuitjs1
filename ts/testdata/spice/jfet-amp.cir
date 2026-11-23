@@ -1,0 +1,8 @@
+* JFET with a drain resistor, gate at -1 V
+.subckt jfet-amp in out
+vdd vdd 0 dc 12
+v1 in 0 dc -1
+rd vdd out 1k
+j1 out in 0 jmod
+.model jmod njf (vto=-2 beta=1m)
+.ends

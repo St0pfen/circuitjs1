@@ -1,0 +1,5 @@
+* MOSFETs are not implemented yet
+.subckt nmos d g s
+m1 d g s nmos
+.model nmos nmos (vto=2 kp=1m)
+.ends

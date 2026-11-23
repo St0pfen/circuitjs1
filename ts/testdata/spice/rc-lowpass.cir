@@ -1,0 +1,6 @@
+* RC low-pass, 1 kHz corner
+.subckt rc-lowpass in out
+r1 in out 1k
+c1 out 0 159n
+v1 in 0 dc 5
+.ends

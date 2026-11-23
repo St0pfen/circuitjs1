@@ -1,0 +1,8 @@
+* RLC band-pass, series L into a load
+.subckt rlc-bandpass in out
+r1 in mid 100
+l1 mid out 10m
+c1 out 0 1u
+r2 out 0 1k
+v1 in 0 dc 5
+.ends

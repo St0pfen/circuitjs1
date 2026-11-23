@@ -1,0 +1,8 @@
+* 1N4148 with the model split over two lines, the way datasheets print it
+.subckt d1n4148-import a k
+v1 a 0 dc 5
+r1 a k 1k
+d1 k 0 d1n4148
+.model d1n4148 d (is=2.682n rs=0.5664 n=1.836
++ cj0=4p m=0.3333 tt=11.54n bv=100 ibv=100u)
+.ends

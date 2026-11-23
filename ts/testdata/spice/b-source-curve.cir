@@ -1,0 +1,6 @@
+* behavioural current source driven by the input voltage
+.subckt curve in out
+v1 in 0 dc 2
+b1 out 0 i={v(in)*0.5m}
+r1 out 0 2k
+.ends

@@ -1,0 +1,7 @@
+* clamp diode with a small-signal model
+.subckt clamp in out
+r1 in out 1k
+d1 out 0 dm
+v1 in 0 dc 5
+.model dm d (is=1e-14 n=1.2)
+.ends

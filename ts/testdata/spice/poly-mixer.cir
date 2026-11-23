@@ -1,0 +1,7 @@
+* two-input POLY source, the cross term dominates
+.subckt mixer a b out
+v1 a 0 dc 1
+v2 b 0 dc 2
+e1 out 0 poly(2) a 0 b 0 0 1 0 0 0.5
+rl out 0 1k
+.ends

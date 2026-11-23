@@ -1,0 +1,6 @@
+* ideal op-amp modelled as a VCVS
+.subckt vcvs-gain in out
+v1 in 0 dc 1
+e1 out 0 in 0 3
+rl out 0 1k
+.ends

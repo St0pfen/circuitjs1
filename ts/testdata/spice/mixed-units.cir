@@ -1,0 +1,9 @@
+* suffixes the way people actually write them
+.subckt mixed in out
+v1 in 0 dc 10
+r1 in out 2k2
+r2 out 0 4k7
+c1 out 0 10nF
+r3 in x 1MEG
+r4 x 0 1M
+.ends

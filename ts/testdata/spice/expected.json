@@ -1,0 +1,139 @@
+{
+  "rc-lowpass.cir": {
+    "name": "rc-lowpass",
+    "pins": [
+      "in",
+      "out"
+    ],
+    "compare": [
+      "out"
+    ]
+  },
+  "rlc-bandpass.cir": {
+    "name": "rlc-bandpass",
+    "pins": [
+      "in",
+      "out"
+    ],
+    "compare": [
+      "out"
+    ]
+  },
+  "diode-clamp.cir": {
+    "name": "clamp",
+    "pins": [
+      "in",
+      "out"
+    ],
+    "compare": [
+      "out"
+    ]
+  },
+  "bridge-rectifier.cir": {
+    "name": "bridge",
+    "pins": [
+      "ac",
+      "plus",
+      "minus"
+    ],
+    "compare": [
+      "plus",
+      "minus"
+    ]
+  },
+  "bjt-ce-amp.cir": {
+    "name": "ce-amp",
+    "pins": [
+      "in",
+      "out"
+    ],
+    "compare": [
+      "out"
+    ],
+    "tolerance": 0.12,
+    "note": "CircuitJS applies the Early voltage to the collector current directly, ngspice's Gummel-Poon folds it into qb: Vbe and Ib agree to 1 uV, Ic differs by ~9% at vaf=100"
+  },
+  "bjt-diffpair.cir": {
+    "name": "diffpair",
+    "pins": [
+      "in1",
+      "in2",
+      "out"
+    ]
+  },
+  "jfet-amp.cir": {
+    "name": "jfet-amp",
+    "pins": [
+      "in",
+      "out"
+    ],
+    "compare": [
+      "out"
+    ]
+  },
+  "vcvs-gain.cir": {
+    "name": "vcvs-gain",
+    "pins": [
+      "in",
+      "out"
+    ],
+    "compare": [
+      "out"
+    ]
+  },
+  "cccs-mirror.cir": {
+    "name": "mirror",
+    "pins": [
+      "in",
+      "out"
+    ],
+    "compare": [
+      "out"
+    ]
+  },
+  "poly-mixer.cir": {
+    "name": "mixer",
+    "pins": [
+      "a",
+      "b",
+      "out"
+    ],
+    "compare": [
+      "out"
+    ]
+  },
+  "b-source-curve.cir": {
+    "name": "curve",
+    "pins": [
+      "in",
+      "out"
+    ],
+    "compare": [
+      "out"
+    ]
+  },
+  "datasheet-1n4148.cir": {
+    "name": "d1n4148-import",
+    "pins": [
+      "a",
+      "k"
+    ],
+    "compare": [
+      "k"
+    ]
+  },
+  "mixed-units.cir": {
+    "name": "mixed",
+    "pins": [
+      "in",
+      "out"
+    ],
+    "note": "not compared: ngspice reads 2k2 as 2k and 4k7 as 4k, circuitjs reads 2200 and 4700 (the intended meaning; see SpiceImportEdgeCases)"
+  },
+  "mosfet-unsupported.cir": {
+    "error": "element type \"m\" is not supported yet"
+  },
+  "include-unsupported.cir": {
+    "error": "directive \".include\" is not supported"
+  }
+}
