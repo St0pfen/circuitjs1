@@ -259,3 +259,74 @@ r1 a 0 1k
     const sim = rows.at(-1)![1];
     expect(sim, `circuitjs ${sim} V, ngspice ${spice} V`).toBeCloseTo(spice, 3);
 });
+
+// one sample circuit per controlled-source type
+const CONTROLLED_SOURCES: [string, string, string[]][] = [
+    ["VCVS", `
+.subckt etest in out
+v1 in 0 dc 1
+e1 out 0 in 0 2
+r1 out 0 1k
+.ends
+`, ["in", "out"]],
+    ["VCCS", `
+.subckt gtest in out
+v1 in 0 dc 1
+g1 out 0 in 0 1m
+r1 out 0 1k
+.ends
+`, ["in", "out"]],
+    ["CCVS", `
+.subckt htest in out
+v1 in 0 dc 1
+r1 in 0 1k
+h1 out 0 v1 10
+r2 out 0 1k
+.ends
+`, ["in", "out"]],
+    ["CCCS", `
+.subckt ftest in out
+v1 in 0 dc 1
+r1 in 0 1k
+f1 out 0 v1 2
+r2 out 0 1k
+.ends
+`, ["in", "out"]],
+    ["B current", `
+.subckt btest in out
+v1 in 0 dc 1
+b1 out 0 i={v(in)*1m}
+r1 out 0 1k
+.ends
+`, ["in", "out"]],
+    ["B voltage", `
+.subckt btest in out
+v1 in 0 dc 1
+b1 out 0 v={v(in)*3}
+r1 out 0 1k
+.ends
+`, ["in", "out"]],
+];
+
+it.each(CONTROLLED_SOURCES)("matches ngspice on an imported %s", async (_kind, netlist, names) => {
+    const { app, nl, voltage } = await importCircuit(netlist);
+    vi.useFakeTimers();
+    const timeStep = 1e-6, stop = 20e-3;
+    startSimulator(app, timeStep);
+    const rows = runSimulator(app, stop, 5, () => nl.extList.map((_, j) => voltage(j)));
+    vi.useRealTimers();
+
+    const out = join(tmpdir(), "spice-cs-" + _kind.replace(/ /g, "-"));
+    writeFileSync(out + ".cir", flatten(netlist) +
+        `\n.tran ${timeStep} ${stop}\n.control\nrun\nwrdata ${out}.spice ${names.map(n => `v(${n})`).join(" ")}\n.endc\n.end\n`);
+    execFileSync("ngspice", ["-b", out + ".cir"], { stdio: ["ignore", "pipe", "pipe"] });
+    const last = readWrdata(readFileSync(out + ".spice", "utf8")).at(-1)!;
+
+    const lastRow = rows.at(-1)!;
+    const report = names.map((n, j) =>
+        `${n}: circuitjs ${lastRow[j + 1].toFixed(4)} V, ngspice ${last[2 * j + 1].toFixed(4)} V`);
+    for (let j = 0; j < names.length; j++) {
+        const sim = lastRow[j + 1], spice = last[2 * j + 1];
+        expect(Math.abs(sim - spice), report.join("; ")).toBeLessThan(Math.max(0.02 * Math.abs(spice), 5e-3));
+    }
+});

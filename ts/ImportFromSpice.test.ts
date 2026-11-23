@@ -238,7 +238,7 @@ describe("buildSpiceParts", () => {
     });
 
     it("names the element types it does not handle yet", () => {
-        expect(() => buildSpiceParts(netlist("b1 a 0 v=1"))).toThrow('element type "b" is not supported yet');
+        expect(() => buildSpiceParts(netlist("m1 a 0 b mmod"))).toThrow('element type "m" is not supported yet');
     });
 });
 

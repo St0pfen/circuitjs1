@@ -41,6 +41,14 @@ export class SpiceTokenizer {
         return this.pos < this.text.length;
     }
 
+    // the token nextToken() would return, without consuming it
+    peekToken(): string {
+        const pos = this.pos;
+        const token = this.nextToken();
+        this.pos = pos;
+        return token;
+    }
+
     nextToken(): string {
         return this.nextTokenPreserveCase().toLowerCase();
     }

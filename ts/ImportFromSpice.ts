@@ -71,7 +71,7 @@ export interface SpiceNetlist {
     elements: SpiceElement[];
     nodeIndex(name: string): number;
     // nodes of the named voltage source, for the F and H sources that refer to it
-    voltageSourceNodes(name: string): [number, number];
+    voltageSourceNodes(name: string, line?: number): [number, number];
 }
 
 // A .model card in the terms the model registries need.  Building one does not
@@ -129,6 +129,50 @@ export function nodeCountFor(type: string, line: number): number {
     if (type === "x")
         throw new SpiceParseError(".subckt instance (X) is not supported yet", line);
     throw new SpiceParseError(`unknown element type "${type}"`, line);
+}
+
+// "poly(2)" -> 2
+function polyDim(token: string, line: number): number {
+    const m = /^poly\((\d+)\)$/i.exec(token);
+    if (m == null)
+        throw new SpiceParseError(`cannot read the POLY order from "${token}"`, line);
+    return Number(m[1]);
+}
+
+function readNodes(count: number, st: SpiceTokenizer, name: string, line: number): string[] {
+    const nodes: string[] = [];
+    for (let i = 0; i < count; i++) {
+        if (!st.hasMoreTokens())
+            throw new SpiceParseError(`element "${name}" has ${i} node(s), expected ${count}`, line);
+        nodes.push(st.nextToken());
+    }
+    return nodes;
+}
+
+// The node tokens of an element line.  E and G are the awkward ones: after the
+// output pair comes either POLY(n) with 2n control nodes, VALUE={...} with none,
+// or two control nodes.
+function readElementNodes(type: string, st: SpiceTokenizer, name: string, line: number):
+        { nodes: string[], poly?: string } {
+    if (type !== "e" && type !== "g")
+        return { nodes: readNodes(nodeCountFor(type, line), st, name, line) };
+    const nodes = readNodes(2, st, name, line);
+    const peek = st.peekToken();
+    let poly: string | undefined;
+    if (peek === "poly" || peek.startsWith("poly(")) {
+        st.nextToken();
+        poly = peek;
+        if (peek === "poly") {
+            // this tokenizer splits the parentheses off, so read "(" dim ")"
+            st.nextToken();
+            poly = "poly(" + st.nextToken() + ")";
+            st.nextToken();
+        }
+        nodes.push(...readNodes(2 * polyDim(poly, line), st, name, line));
+    } else if (!peek.startsWith("value")) {
+        nodes.push(...readNodes(2, st, name, line));
+    }
+    return { nodes, poly };
 }
 
 interface LogicalLine {
@@ -220,12 +264,8 @@ export function parseSpiceNetlist(text: string): SpiceNetlist {
         }
 
         const type = first.charAt(0);
-        const count = nodeCountFor(type, ll.line);
-        for (let i = 0; i < count; i++) {
-            if (!st.hasMoreTokens())
-                throw new SpiceParseError(`element "${first}" has ${i} node(s), expected ${count}`, ll.line);
-            addNode(st.nextToken());
-        }
+        for (const node of readElementNodes(type, st, first, ll.line).nodes)
+            addNode(node);
     }
 
     const nodeIndex = (name: string): number => {
@@ -249,14 +289,9 @@ export function parseSpiceNetlist(text: string): SpiceNetlist {
         const type = name.charAt(0);
         if (type === "." || type === "*")
             continue;
-        const count = nodeCountFor(type, ll.line);
-        const elementNodes: number[] = [];
-        for (let i = 0; i < count; i++) {
-            if (!st.hasMoreTokens())
-                throw new SpiceParseError(`element "${name}" has ${i} node(s), expected ${count}`, ll.line);
-            elementNodes.push(nodeIndex(st.nextToken()));
-        }
-        const rest: string[] = [];
+        const read = readElementNodes(type, st, name, ll.line);
+        const elementNodes = read.nodes.map(n => nodeIndex(n));
+        const rest: string[] = read.poly === undefined ? [] : [read.poly];
         while (st.hasMoreTokens())
             rest.push(st.nextTokenPreserveCase());
         elements.push({ name, type, nodes: elementNodes, rest, line: ll.line });
@@ -267,10 +302,10 @@ export function parseSpiceNetlist(text: string): SpiceNetlist {
     if (subcircuitName === "")
         throw new SpiceParseError("no .subckt found in the netlist");
 
-    const voltageSourceNodes = (name: string): [number, number] => {
+    const voltageSourceNodes = (name: string, line?: number): [number, number] => {
         const vs = voltageSources.get(name.toLowerCase());
         if (vs == null)
-            throw new SpiceParseError(`no voltage source named "${name}"`);
+            throw new SpiceParseError(`no voltage source named "${name}"`, line);
         return vs;
     };
 
@@ -437,6 +472,85 @@ export function registerSpiceModels(specs: SpiceModelSpec[]): void {
 // Euler, and trapezoidal ringing ruins the operating point of an imported circuit.
 const BACK_EULER = 2;
 
+const LETTERS = "abcdefghi";
+
+function letterFor(index: number, line: number): string {
+    if (index >= LETTERS.length)
+        throw new SpiceParseError("more than 9 expression inputs are not supported", line);
+    return LETTERS[index];
+}
+
+// Turns SPICE's v(a) and v(a,b) into CircuitJS expression inputs: every referenced
+// node becomes one input pin, in the order the expression first mentions it.
+function convertSpiceExpr(text: string, nl: SpiceNetlist, line: number): { expr: string, inputs: number[] } {
+    const inputs: number[] = [];
+    let expr = "";
+    for (let i = 0; i < text.length; i++) {
+        const c = text[i];
+        if (c === "{" || c === "}" || c === " " || c === "\t")
+            continue;
+        if (/[0-9.]/.test(c)) {
+            // SPICE numbers carry suffixes (1m, 2k2, 10uF); the expression parser does not
+            const m = /^(\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:[a-z]+\d*)?/i.exec(text.substring(i));
+            const token = m![0];
+            expr += num(parseSpiceValue(token, line));
+            i += token.length - 1;
+            continue;
+        }
+        if (!/[A-Za-z_]/.test(c)) {
+            expr += c;
+            continue;
+        }
+        let j = i;
+        while (j < text.length && /[A-Za-z_0-9]/.test(text[j]))
+            j++;
+        const word = text.substring(i, j).toLowerCase();
+        if (text[j] === "(" && (word === "v" || word === "i")) {
+            if (word === "i")
+                throw new SpiceParseError("i() references are not supported yet", line);
+            const close = text.indexOf(")", j);
+            if (close < 0)
+                throw new SpiceParseError("unbalanced v( in the expression", line);
+            const args = text.substring(j + 1, close).split(",").map(a => a.trim());
+            if (args.length === 1) {
+                inputs.push(nl.nodeIndex(args[0]));
+                expr += letterFor(inputs.length - 1, line);
+            } else if (args.length === 2) {
+                inputs.push(nl.nodeIndex(args[0]), nl.nodeIndex(args[1]));
+                expr += `(${letterFor(inputs.length - 2, line)}-${letterFor(inputs.length - 1, line)})`;
+            } else
+                throw new SpiceParseError(`v() takes one or two nodes, got ${args.length}`, line);
+            i = close;
+            continue;
+        }
+        expr += word;
+        i = j - 1;
+    }
+    return { expr, inputs };
+}
+
+// POLY(n): c0 + c1*x1 + ... + quadratic cross terms for n = 2.  Higher orders are
+// not expressible here yet, and saying so beats a silently wrong expression.
+function polyExpr(dim: number, coeffs: number[], inputs: string[], line: number): string {
+    if (dim > 2)
+        throw new SpiceParseError(`POLY(${dim}) is not supported yet`, line);
+    const terms: string[] = [];
+    if (coeffs[0])
+        terms.push(num(coeffs[0]));
+    for (let i = 1; i <= dim; i++)
+        if (coeffs[i])
+            terms.push(`${num(coeffs[i])}*${inputs[i - 1]}`);
+    if (dim === 2) {
+        const pairs = [[0, 0], [0, 1], [1, 1]];
+        for (let k = 0; k < 3; k++) {
+            const c = coeffs[3 + k];
+            if (c)
+                terms.push(`${num(c)}*${inputs[pairs[k][0]]}*${inputs[pairs[k][1]]}`);
+        }
+    }
+    return terms.length ? terms.join("+") : "0";
+}
+
 export function buildSpiceParts(nl: SpiceNetlist, specs: SpiceModelSpec[] = buildSpiceModels(nl)): SpicePart[] {
     const byName = new Map(specs.map(s => [s.name, s]));
     const specFor = (el: SpiceElement): SpiceModelSpec => {
@@ -472,6 +586,66 @@ export function buildSpiceParts(nl: SpiceNetlist, specs: SpiceModelSpec[] = buil
             case "d":
                 part("DiodeElm", el.nodes, "2 " + specFor(el).name);
                 break;
+            // E (VCVS) and G (VCCS): out+, out-, then control nodes, POLY() or VALUE=
+            case "e":
+            case "g": {
+                const head = el.rest[0] ?? "";
+                let inputs: number[], expr: string;
+                if (head.toLowerCase().startsWith("poly")) {
+                    const dim = polyDim(head, el.line);
+                    const pairs: string[] = [];
+                    for (let k = 0; k < dim; k++)
+                        pairs.push(`(${letterFor(2 * k, el.line)}-${letterFor(2 * k + 1, el.line)})`);
+                    inputs = el.nodes.slice(2);
+                    expr = polyExpr(dim, el.rest.slice(1).map(t => parseSpiceValue(t, el.line)), pairs, el.line);
+                } else if (head.toLowerCase().startsWith("value=")) {
+                    const body = el.rest.join(" ").substring("value=".length);
+                    ({ expr, inputs } = convertSpiceExpr(body, nl, el.line));
+                } else {
+                    inputs = [el.nodes[2], el.nodes[3]];
+                    expr = `${num(parseSpiceValue(head, el.line))}*(a-b)`;
+                }
+                const voltage = el.type === "e";
+                part(voltage ? "VCVSElm" : "VCCSElm",
+                    [...inputs, voltage ? el.nodes[0] : el.nodes[1], voltage ? el.nodes[1] : el.nodes[0]],
+                    `0 ${inputs.length} ${expr}`);
+                break;
+            }
+            // F (CCCS) and H (CCVS) sense the current through a named voltage source
+            case "f":
+            case "h": {
+                const head = el.rest[0] ?? "";
+                let inputs: number[], expr: string;
+                if (head.toLowerCase().startsWith("poly")) {
+                    const dim = polyDim(head, el.line);
+                    const names = el.rest.slice(1, 1 + dim);
+                    inputs = names.flatMap(n => nl.voltageSourceNodes(n, el.line));
+                    const exprs = names.map((_, k) => letterFor(k, el.line));
+                    expr = polyExpr(dim, el.rest.slice(1 + dim).map(t => parseSpiceValue(t, el.line)), exprs, el.line);
+                } else {
+                    inputs = nl.voltageSourceNodes(head, el.line);
+                    expr = `${num(parseSpiceValue(el.rest[1], el.line))}*a`;
+                }
+                const voltage = el.type === "h";
+                part(voltage ? "CCVSElm" : "CCCSElm",
+                    [...inputs, voltage ? el.nodes[0] : el.nodes[1], voltage ? el.nodes[1] : el.nodes[0]],
+                    `2 ${inputs.length} ${expr}`);
+                break;
+            }
+            // B source: I={...} is a current source, V={...} a voltage source
+            case "b": {
+                const text = el.rest.join(" ");
+                const eq = text.indexOf("=");
+                const kind = eq < 0 ? "" : text.substring(0, eq).trim().toLowerCase();
+                if (kind !== "i" && kind !== "v")
+                    throw new SpiceParseError(`B source with "${kind}=" is not supported yet`, el.line);
+                const { expr, inputs } = convertSpiceExpr(text.substring(eq + 1), nl, el.line);
+                const voltage = kind === "v";
+                part(voltage ? "VCVSElm" : "VCCSElm",
+                    [...inputs, voltage ? el.nodes[0] : el.nodes[1], voltage ? el.nodes[1] : el.nodes[0]],
+                    `0 ${inputs.length} ${expr}`);
+                break;
+            }
             case "q": {
                 const spec = specFor(el);
                 const area = areaOf(el);
