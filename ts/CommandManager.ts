@@ -108,6 +108,12 @@ export class CommandManager {
             this.app.imageExporter?.doExportAsSVG();
         if (item == "createsubcircuit")
             this.doCreateSubcircuit();
+        if (item == "importfromspice")
+            // loaded on demand: the dialog pulls in the subcircuit editor, which would
+            // close a cycle through CirSim at module load time
+            void import("./ImportFromSpiceDialog").then(m => {
+                CirSim.dialogShowing = new m.ImportFromSpiceDialog();
+            });
         if (item == "dcanalysis")
             this.doDCAnalysis();
         if (item == "print")

@@ -217,6 +217,7 @@ export class CommandPaletteRegistry {
         CommandPaletteRegistry.add("file:copypng", "Copy Circuit Image to Clipboard", "File", "copy image clipboard png", "file", "copypng");
         CommandPaletteRegistry.add("file:exportassvg", "Save As SVG...", "File", "export svg vector", "file", "exportassvg");
         CommandPaletteRegistry.add("file:createsubcircuit", "Create Subcircuit...", "File", "subcircuit create", "file", "createsubcircuit");
+        CommandPaletteRegistry.add("file:importfromspice", "Import Subcircuit From Spice...", "File", "spice import subcircuit netlist", "file", "importfromspice");
         CommandPaletteRegistry.add("file:dcanalysis", "Find DC Operating Point", "File", "dc analysis operating point", "file", "dcanalysis");
         CommandPaletteRegistry.add("file:recover", "Recover Auto-Save", "File", "recover autosave restore", "file", "recover");
         CommandPaletteRegistry.add("file:print", "Print...", "File", "print " + cm + "P", "file", "print");

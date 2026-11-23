@@ -512,6 +512,7 @@ export class Menus {
         fileMenu.addCommand(iconHtml("image", "Copy Circuit Image to Clipboard"),       "file", "copypng");
         fileMenu.addCommand(iconHtml("image", "Export As SVG..."),                      "file", "exportassvg");
         fileMenu.addCommand(iconHtml("microchip", "Create Subcircuit..."),              "file", "createsubcircuit");
+        fileMenu.addCommand(iconHtml("microchip", "Import Subcircuit From Spice..."),     "file", "importfromspice");
         fileMenu.addCommand(iconHtml("magic", "Find DC Operating Point"),               "file", "dcanalysis");
         fileMenu.addMenuItem(this.recoverItem,
             iconHtml("back-in-time", "Recover Auto-Save"), "file", "recover");

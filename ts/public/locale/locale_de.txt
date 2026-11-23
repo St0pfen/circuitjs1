@@ -935,6 +935,7 @@
 "Create New Model"="Neues Modell erstellen"
 "Create New Simple Model"="Neues einfaches Modell erstellen"
 "Create Subcircuit..."="Unterkreis erstellen..."
+"Import Subcircuit From Spice..."="Unterkreis aus SPICE importieren..."
 "Crystal Oscillator"="Quarzoszillator"
 "Ctrl-"="Ctrl-"
 "Current Adder"="Strom-Addierer"
