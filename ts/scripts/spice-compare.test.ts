@@ -61,3 +61,101 @@ it.skipIf(!FILE)("matches the simulator", async () => {
                     `\nnetlist and voltages in ${OUT}.*`;
     expect(report, summary + "\n" + report.join("\n")).toEqual([]);
 });
+
+// ---------------------------------------------------------------------------
+// the other direction: a SPICE netlist, imported and placed as a circuit
+// ---------------------------------------------------------------------------
+
+const RLC = `
+* RLC low-pass with two sources
+.subckt rlc in mid out
+r1 in mid 100
+l1 mid out 1m
+c1 out 0 1u
+r2 out 0 1k
+v1 in 0 dc 5
+i1 mid 0 dc 1m
+.ends
+`;
+
+// Import the netlist and lay the elements out the way the canvas does: node k at
+// x = k*64, so elements that share a node share a post coordinate.  Node 0 gets a
+// ground.  Returns the circuit, the element for each external node, and the netlist.
+async function importCircuit(text: string) {
+    const { parseSpiceNetlist, buildSpiceParts } = await import("../ImportFromSpice");
+    const { ElementFactory } = await import("../ElementFactory");
+    const { StringTokenizer } = await import("../StringTokenizer");
+    const { parseIntStrict } = await import("../NumberParse");
+    const { GroundElm } = await import("../GroundElm");
+    const app = await makeApp();
+    const nl = parseSpiceNetlist(text);
+    const elms: any[] = [], probes: any[] = [];
+    const at = (n: number): [number, number] => [n * 64, 0];
+    for (const part of buildSpiceParts(nl)) {
+        const st = new StringTokenizer(part.dump, " ");
+        const flags = parseIntStrict(st.nextToken());
+        const [x1, y1] = at(part.nodes[0]), [x2, y2] = at(part.nodes[1]);
+        const ce: any = ElementFactory.create(part.className, x1, y1, x2, y2, flags, st);
+        ce.x = x1; ce.y = y1; ce.x2 = x2; ce.y2 = y2;
+        ce.setPoints();
+        elms.push(ce);
+        probes.push({ node: part.nodes[0], elm: ce, post: 0 });
+        if (part.nodes[1] !== undefined)
+            probes.push({ node: part.nodes[1], elm: ce, post: 1 });
+    }
+    const g: any = new GroundElm(0, 0);
+    g.x = 0; g.y = 0; g.x2 = 0; g.y2 = 16; g.setPoints();
+    elms.push(g);
+    app.elmList.push(...elms);
+    // the voltage of external node j: any element post that sits on it
+    const voltage = (j: number) => {
+        const p = probes.find(q => q.node === nl.extList[j].node)!;
+        return p.elm.nodes[p.post].v;
+    };
+    return { app, nl, voltage };
+}
+
+// the netlist's body without the .subckt wrapper: same topology, node 0 is ground
+function flatten(text: string): string {
+    return text.split("\n").filter(l => !/^\s*\.(subckt|ends)\b/i.test(l)).join("\n");
+}
+
+it("imports a 5 V source with the right sign", async () => {
+    const { app, voltage } = await importCircuit(`
+.subckt src out
+v1 out 0 dc 5
+r1 out 0 1k
+.ends
+`);
+    vi.useFakeTimers();
+    startSimulator(app, 1e-6);
+    const rows = runSimulator(app, 1e-3, 3, () => [voltage(0)]);
+    vi.useRealTimers();
+    expect(rows.at(-1)![1]).toBeCloseTo(5, 3);
+});
+
+it("matches ngspice on an imported RLC low-pass with two sources", async () => {
+    const { app, nl, voltage } = await importCircuit(RLC);
+    vi.useFakeTimers();
+    const timeStep = 1e-6, stop = 20e-3;
+    startSimulator(app, timeStep);
+    const names = nl.extList.map(e => e.name);
+    const rows = runSimulator(app, stop, 5, () => names.map((_, j) => voltage(j)));
+    vi.useRealTimers();
+
+    const out = join(tmpdir(), "spice-import-compare");
+    writeFileSync(out + ".cir", flatten(RLC) +
+        `\n.tran ${timeStep} ${stop}\n.control\nrun\nwrdata ${out}.spice ${names.map(n => `v(${n})`).join(" ")}\n.endc\n.end\n`);
+    execFileSync("ngspice", ["-b", out + ".cir"], { stdio: ["ignore", "pipe", "pipe"] });
+    const data = readWrdata(readFileSync(out + ".spice", "utf8"));
+    const last = data.at(-1)!;
+
+    // wrdata writes a scale column before each vector, so the values sit at 1, 3, 5
+    const lastRow = rows.at(-1)!;   // column 0 is the time
+    const report = names.map((n, j) =>
+        `${n}: circuitjs ${lastRow[j + 1].toFixed(6)} V, ngspice ${last[2 * j + 1].toFixed(6)} V`);
+    for (let j = 0; j < names.length; j++) {
+        const sim = lastRow[j + 1], spice = last[2 * j + 1];
+        expect(Math.abs(sim - spice), report.join("; ")).toBeLessThan(Math.max(0.01 * Math.abs(spice), 1e-6));
+    }
+});
