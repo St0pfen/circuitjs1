@@ -78,38 +78,56 @@ i1 mid 0 dc 1m
 .ends
 `;
 
-// Import the netlist and lay the elements out the way the canvas does: node k at
-// x = k*64, so elements that share a node share a post coordinate.  Node 0 gets a
-// ground.  Returns the circuit, the element for each external node, and the netlist.
+// Import the netlist and lay the elements out the way the canvas does: each part
+// gets its own row, and the posts that belong to one node are joined with wires.
+// Returns the circuit, the netlist, and a reader for the voltage of an external node.
 async function importCircuit(text: string) {
-    const { parseSpiceNetlist, buildSpiceParts } = await import("../ImportFromSpice");
+    const { parseSpiceNetlist, buildSpiceParts, buildSpiceModels, registerSpiceModels } = await import("../ImportFromSpice");
     const { ElementFactory } = await import("../ElementFactory");
     const { StringTokenizer } = await import("../StringTokenizer");
     const { parseIntStrict } = await import("../NumberParse");
+    const { WireElm } = await import("../WireElm");
     const { GroundElm } = await import("../GroundElm");
     const app = await makeApp();
     const nl = parseSpiceNetlist(text);
-    const elms: any[] = [], probes: any[] = [];
-    const at = (n: number): [number, number] => [n * 64, 0];
-    for (const part of buildSpiceParts(nl)) {
+    const specs = buildSpiceModels(nl);
+    registerSpiceModels(specs);
+    const elms: any[] = [];
+    const postsByNode = new Map<number, { x: number, y: number }[]>();
+    const probe = new Map<number, { elm: any, post: number }>();
+    let row = 0;
+    for (const part of buildSpiceParts(nl, specs)) {
+        const y = row++ * 64;
         const st = new StringTokenizer(part.dump, " ");
         const flags = parseIntStrict(st.nextToken());
-        const [x1, y1] = at(part.nodes[0]), [x2, y2] = at(part.nodes[1]);
-        const ce: any = ElementFactory.create(part.className, x1, y1, x2, y2, flags, st);
-        ce.x = x1; ce.y = y1; ce.x2 = x2; ce.y2 = y2;
+        const ce: any = ElementFactory.create(part.className, 0, y, 64, y, flags, st);
+        ce.x = 0; ce.y = y; ce.x2 = 64; ce.y2 = y;
         ce.setPoints();
         elms.push(ce);
-        probes.push({ node: part.nodes[0], elm: ce, post: 0 });
-        if (part.nodes[1] !== undefined)
-            probes.push({ node: part.nodes[1], elm: ce, post: 1 });
+        part.nodes.forEach((node, j) => {
+            const p = ce.getPost(j);
+            postsByNode.set(node, [...(postsByNode.get(node) ?? []), { x: p.x, y: p.y }]);
+            if (!probe.has(node))
+                probe.set(node, { elm: ce, post: j });
+        });
     }
+    // the canvas joins posts by coordinate, so one wire per extra post of a node
+    for (const posts of postsByNode.values()) {
+        for (let i = 1; i < posts.length; i++) {
+            const w: any = new WireElm(0, 0);
+            w.x = posts[i - 1].x; w.y = posts[i - 1].y; w.x2 = posts[i].x; w.y2 = posts[i].y;
+            w.setPoints();
+            elms.push(w);
+        }
+    }
+    const ground = postsByNode.get(0)![0];
     const g: any = new GroundElm(0, 0);
-    g.x = 0; g.y = 0; g.x2 = 0; g.y2 = 16; g.setPoints();
+    g.x = ground.x; g.y = ground.y; g.x2 = ground.x; g.y2 = ground.y + 16;
+    g.setPoints();
     elms.push(g);
     app.elmList.push(...elms);
-    // the voltage of external node j: any element post that sits on it
     const voltage = (j: number) => {
-        const p = probes.find(q => q.node === nl.extList[j].node)!;
+        const p = probe.get(nl.extList[j].node)!;
         return p.elm.nodes[p.post].v;
     };
     return { app, nl, voltage };
@@ -157,5 +175,61 @@ it("matches ngspice on an imported RLC low-pass with two sources", async () => {
     for (let j = 0; j < names.length; j++) {
         const sim = lastRow[j + 1], spice = last[2 * j + 1];
         expect(Math.abs(sim - spice), report.join("; ")).toBeLessThan(Math.max(0.01 * Math.abs(spice), 1e-6));
+    }
+});
+
+// one sample circuit per device type, compared against ngspice's operating point
+const DEVICES: [string, string, string[]][] = [
+    ["diode", `
+* diode with series resistance
+.subckt dtest in a
+v1 in 0 dc 1
+r1 in a 1k
+d1 a 0 dmod
+.model dmod d (is=1e-14 n=1.75 rs=0.1)
+.ends
+`, ["in", "a"]],
+    ["bjt", `
+* common emitter, biased by a base resistor
+.subckt qtest vcc c b
+v1 vcc 0 dc 5
+rc vcc c 1k
+rb vcc b 470k
+q1 c b 0 qn
+.model qn npn (bf=100 is=1e-14)
+.ends
+`, ["vcc", "c", "b"]],
+    ["jfet", `
+* n-channel JFET with a gate bias
+.subckt jtest vdd d g
+vdd vdd 0 dc 10
+rd vdd d 1k
+vg g 0 dc -1
+j1 d g 0 jn
+.model jn njf (vto=-2 beta=1m)
+.ends
+`, ["vdd", "d", "g"]],
+];
+
+it.each(DEVICES)("matches ngspice on an imported %s", async (_kind, netlist, names) => {
+    const { app, nl, voltage } = await importCircuit(netlist);
+    vi.useFakeTimers();
+    const timeStep = 1e-6, stop = 20e-3;
+    startSimulator(app, timeStep);
+    const rows = runSimulator(app, stop, 5, () => nl.extList.map((_, j) => voltage(j)));
+    vi.useRealTimers();
+
+    const out = join(tmpdir(), "spice-device-" + _kind);
+    writeFileSync(out + ".cir", flatten(netlist) +
+        `\n.tran ${timeStep} ${stop}\n.control\nrun\nwrdata ${out}.spice ${names.map(n => `v(${n})`).join(" ")}\n.endc\n.end\n`);
+    execFileSync("ngspice", ["-b", out + ".cir"], { stdio: ["ignore", "pipe", "pipe"] });
+    const last = readWrdata(readFileSync(out + ".spice", "utf8")).at(-1)!;
+
+    const lastRow = rows.at(-1)!;
+    const report = names.map((n, j) =>
+        `${n}: circuitjs ${lastRow[j + 1].toFixed(4)} V, ngspice ${last[2 * j + 1].toFixed(4)} V`);
+    for (let j = 0; j < names.length; j++) {
+        const sim = lastRow[j + 1], spice = last[2 * j + 1];
+        expect(Math.abs(sim - spice), report.join("; ")).toBeLessThan(Math.max(0.02 * Math.abs(spice), 5e-3));
     }
 });

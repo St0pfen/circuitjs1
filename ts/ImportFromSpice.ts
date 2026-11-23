@@ -35,6 +35,8 @@
 import { ExtListEntry } from "./ExtListEntry";
 import { SpiceTokenizer } from "./SpiceTokenizer";
 import { CustomLogicModel } from "./CustomLogicModel";
+import { DiodeModel } from "./DiodeModel";
+import { TransistorModel } from "./TransistorModel";
 
 export class SpiceParseError extends Error {
     line?: number;
@@ -70,6 +72,17 @@ export interface SpiceNetlist {
     nodeIndex(name: string): number;
     // nodes of the named voltage source, for the F and H sources that refer to it
     voltageSourceNodes(name: string): [number, number];
+}
+
+// A .model card in the terms the model registries need.  Building one does not
+// register anything: the dialog only calls registerSpiceModels() when the user
+// confirms, so cancelling leaves no models behind.
+export interface SpiceModelSpec {
+    kind: "diode" | "transistor" | "jfet";
+    name: string;                    // <subcircuit>-<card name>, plus -A<area> for a variant
+    params: Record<string, number>;  // field names of the CircuitJS model class
+    polarity?: number;               // transistor: 1 = npn, -1 = pnp
+    beta?: number;                   // transistor: forward beta, which lives on the element
 }
 
 // One element of the imported circuit, in the terms CircuitJS needs: the element
@@ -285,31 +298,211 @@ function num(v: number): string {
     return String(parseFloat(v.toPrecision(12)));
 }
 
+// SPICE card parameter -> TransistorModel field.  vaf/var/ikf/ikr are stored as
+// reciprocals in CircuitJS, so they are converted instead of copied.
+const TRANSISTOR_PARAMS: Record<string, string> = {
+    is: "satCur", br: "betaR", ne: "leakBEemissionCoeff", nc: "leakBCemissionCoeff",
+    nf: "emissionCoeffF", nr: "emissionCoeffR", ise: "BEleakCur", isc: "BCleakCur",
+};
+const TRANSISTOR_RECIPROCALS: Record<string, string> = {
+    vaf: "invEarlyVoltF", var: "invEarlyVoltR", ikf: "invRollOffF", ikr: "invRollOffR",
+};
+const DIODE_PARAMS: Record<string, string> = {
+    is: "saturationCurrent", rs: "seriesResistance", n: "emissionCoefficient", bv: "breakdownVoltage",
+};
+
+function modelCardFor(nl: SpiceNetlist, name: string, line: number): SpiceModelCard {
+    const card = nl.models.find(m => m.name.toLowerCase() === name.toLowerCase());
+    if (card == null)
+        throw new SpiceParseError(`no .model named "${name}"`, line);
+    return card;
+}
+
+function diodeSpec(nl: SpiceNetlist, card: SpiceModelCard): SpiceModelSpec {
+    const params: Record<string, number> = {};
+    for (const [key, field] of Object.entries(DIODE_PARAMS))
+        if (card.params[key] !== undefined)
+            params[field] = parseSpiceValue(card.params[key], card.line);
+    return { kind: "diode", name: nl.subcircuitName + "-" + card.name, params };
+}
+
+function transistorSpec(nl: SpiceNetlist, card: SpiceModelCard, area: number): SpiceModelSpec {
+    const params: Record<string, number> = { satCur: 1e-16 };   // Java's default
+    for (const [key, field] of Object.entries(TRANSISTOR_PARAMS))
+        if (card.params[key] !== undefined)
+            params[field] = parseSpiceValue(card.params[key], card.line);
+    for (const [key, field] of Object.entries(TRANSISTOR_RECIPROCALS))
+        if (card.params[key] !== undefined)
+            params[field] = 1 / parseSpiceValue(card.params[key], card.line);
+    if (area !== 1) {
+        // a bigger device: more leakage current, less roll-off
+        params.satCur *= area;
+        params.BEleakCur *= area;
+        params.BCleakCur *= area;
+        params.invRollOffF /= area;
+        params.invRollOffR /= area;
+    }
+    const beta = card.params["bf"] !== undefined ? parseSpiceValue(card.params["bf"], card.line) : 100;
+    const name = nl.subcircuitName + "-" + card.name + (area === 1 ? "" : "-A" + area);
+    const polarity = card.type === "pnp" ? -1 : 1;
+    return { kind: "transistor", name, params, polarity, beta };
+}
+
+function jfetSpec(nl: SpiceNetlist, card: SpiceModelCard): SpiceModelSpec {
+    const params: Record<string, number> = {};
+    for (const key of ["vto", "beta"])
+        if (card.params[key] !== undefined)
+            params[key] = parseSpiceValue(card.params[key], card.line);
+    // SPICE has Id = beta*(vgs-vt)^2, CircuitJS 0.5*beta*(vgs-vt)^2
+    if (params.beta !== undefined)
+        params.beta *= 2;
+    return {
+        kind: "jfet", name: nl.subcircuitName + "-" + card.name, params,
+        polarity: card.type === "pjf" ? -1 : 1,
+    };
+}
+
+// The model an element line names: the token right after its nodes, for d, q and j.
+function modelNameOf(el: SpiceElement): string {
+    return el.rest[0];
+}
+
+// The area= of a q line, defaulting to 1.  SPICE also allows a bare number.
+function areaOf(el: SpiceElement): number {
+    const token = el.rest[1];
+    if (token === undefined)
+        return 1;
+    const value = token.toLowerCase().startsWith("area=") ? token.substring(5) : token;
+    const area = parseSpiceValue(value, el.line);
+    if (!(area > 0))
+        throw new SpiceParseError(`area must be positive, got "${token}"`, el.line);
+    return area;
+}
+
+// the registry name an element's model gets: prefixed with the subcircuit, plus
+// the area suffix for a transistor variant
+function specNameFor(nl: SpiceNetlist, el: SpiceElement): string {
+    const base = nl.subcircuitName + "-" + modelNameOf(el);
+    return el.type === "q" && areaOf(el) !== 1 ? base + "-A" + areaOf(el) : base;
+}
+
+export function buildSpiceModels(nl: SpiceNetlist): SpiceModelSpec[] {
+    const specs = new Map<string, SpiceModelSpec>();
+    for (const el of nl.elements) {
+        if (el.type !== "d" && el.type !== "q" && el.type !== "j")
+            continue;
+        const name = modelNameOf(el);
+        if (name === undefined)
+            throw new SpiceParseError(`element "${el.name}" names no model`, el.line);
+        const card = modelCardFor(nl, name, el.line);
+        let spec: SpiceModelSpec;
+        if (el.type === "d")
+            spec = diodeSpec(nl, card);
+        else if (el.type === "q")
+            spec = transistorSpec(nl, card, areaOf(el));
+        else if (el.type === "j")
+            spec = jfetSpec(nl, card);
+        else
+            continue;
+        specs.set(spec.name, spec);
+    }
+    return [...specs.values()];
+}
+
+// Only called when the user confirms the import.  The models go into the local
+// registry tier, so they travel with the circuit and not into the global list.
+export function registerSpiceModels(specs: SpiceModelSpec[]): void {
+    for (const spec of specs) {
+        if (spec.kind === "diode") {
+            const dm = new DiodeModel();
+            dm.name = spec.name;
+            Object.assign(dm, spec.params);
+            dm.updateModel();
+            DiodeModel.registry.setLocal(dm);
+        } else if (spec.kind === "transistor") {
+            const tm = new TransistorModel();
+            tm.name = spec.name;
+            Object.assign(tm, spec.params);
+            tm.updateModel();
+            TransistorModel.registry.setLocal(tm);
+        }
+        // a JFET carries its vto/beta on the element, so there is no model to register
+    }
+}
+
 // Capacitors and inductors get FLAG_BACK_EULER (2): SPICE models assume backward
 // Euler, and trapezoidal ringing ruins the operating point of an imported circuit.
 const BACK_EULER = 2;
 
-export function buildSpiceParts(nl: SpiceNetlist): SpicePart[] {
-    return nl.elements.map(el => {
-        const part = (className: string, dump: string): SpicePart =>
-            ({ className, nodes: el.nodes, dump, line: el.line });
+export function buildSpiceParts(nl: SpiceNetlist, specs: SpiceModelSpec[] = buildSpiceModels(nl)): SpicePart[] {
+    const byName = new Map(specs.map(s => [s.name, s]));
+    const specFor = (el: SpiceElement): SpiceModelSpec => {
+        const spec = byName.get(specNameFor(nl, el));
+        if (spec == null)
+            throw new SpiceParseError(`model "${modelNameOf(el)}" was not built`, el.line);
+        return spec;
+    };
+    const parts: SpicePart[] = [];
+    // nodes the model needs beyond the netlist's own: bulk resistors, junction caps
+    let extraNode = nl.nodes.length + 1;
+    for (const el of nl.elements) {
+        const part = (className: string, nodes: number[], dump: string) =>
+            parts.push({ className, nodes, dump, line: el.line });
         switch (el.type) {
             case "r":
-                return part("ResistorElm", "0 " + num(resistorValue(el)));
+                part("ResistorElm", el.nodes, "0 " + num(resistorValue(el)));
+                break;
             case "c":
-                return part("CapacitorElm", `${BACK_EULER} ${num(elementValue(el))} 0 0`);
+                part("CapacitorElm", el.nodes, `${BACK_EULER} ${num(elementValue(el))} 0 0`);
+                break;
             case "l":
-                return part("InductorElm", `${BACK_EULER} ${num(elementValue(el))} 0`);
+                part("InductorElm", el.nodes, `${BACK_EULER} ${num(elementValue(el))} 0`);
+                break;
             // SPICE puts the higher node first, CircuitJS the last, so the sign is
             // flipped instead of swapping the nodes (which keeps F/H simple)
             case "v":
-                return part("VoltageElm", `0 0 0 ${num(-elementValue(el))}`);
+                part("VoltageElm", el.nodes, `0 0 0 ${num(-elementValue(el))}`);
+                break;
             case "i":
-                return part("CurrentElm", "0 " + num(elementValue(el)));
+                part("CurrentElm", el.nodes, "0 " + num(elementValue(el)));
+                break;
+            case "d":
+                part("DiodeElm", el.nodes, "2 " + specFor(el).name);
+                break;
+            case "q": {
+                const spec = specFor(el);
+                const area = areaOf(el);
+                const card = modelCardFor(nl, modelNameOf(el), el.line);
+                const value = (key: string) => card.params[key] === undefined
+                    ? 0 : parseSpiceValue(card.params[key], card.line);
+                const rc = value("rc"), rb = value("rb"), re = value("re");
+                const cje = value("cje"), cjc = value("cjc");
+                let [collector, base, emitter] = el.nodes;
+                // SPICE's rc/rb/re are the bulk resistances of the terminals; they are
+                // real resistors between the terminal and the intrinsic transistor
+                if (rc > 0) { const n = extraNode++; part("ResistorElm", [collector, n], "0 " + num(rc / area)); collector = n; }
+                if (rb > 0) { const n = extraNode++; part("ResistorElm", [base, n], "0 " + num(rb / area)); base = n; }
+                if (re > 0) { const n = extraNode++; part("ResistorElm", [emitter, n], "0 " + num(re / area)); emitter = n; }
+                if (cje > 0) part("CapacitorElm", [base, emitter], `${BACK_EULER} ${num(cje * area)} 0 0`);
+                if (cjc > 0) part("CapacitorElm", [base, collector], `${BACK_EULER} ${num(cjc * area)} 0 0`);
+                part("TransistorElm", [base, collector, emitter],
+                    `0 ${spec.polarity} 0 0 ${num(spec.beta!)} ${spec.name}`);
+                break;
+            }
+            case "j": {
+                const spec = specFor(el);
+                // SPICE writes drain gate source, CircuitJS draws gate source drain
+                const [drain, gate, source] = el.nodes;
+                const pnp = spec.polarity === -1 ? 1 : 0;
+                part("JfetElm", [gate, source, drain],
+                    `${pnp} ${num(spec.params.vto ?? 0)} ${num(spec.params.beta ?? 0)}`);
+                break;
+            }
             default:
                 throw new SpiceParseError(`element type "${el.type}" is not supported yet`, el.line);
         }
-    });
+    }
+    return parts;
 }
 
 // The strings SubcircuitModel.createModelFromOldFormat() takes.
