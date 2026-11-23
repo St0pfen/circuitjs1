@@ -192,13 +192,16 @@ export function parseSpiceNetlist(text: string): SpiceNetlist {
         if (first === ".ends")
             continue;
         if (first === ".model") {
-            if (!st.hasMoreTokens() || !st.hasMoreTokens())
+            if (!st.hasMoreTokens())
                 throw new SpiceParseError(".model needs a name and a type", ll.line);
             const name = st.nextTokenPreserveCase();
+            if (!st.hasMoreTokens())
+                throw new SpiceParseError(".model needs a name and a type", ll.line);
             const type = st.nextToken();
             const params: Record<string, string> = {};
             while (st.hasMoreTokens()) {
-                const tok = st.nextTokenPreserveCase();
+                // some netlists separate parameters with commas
+                const tok = st.nextTokenPreserveCase().replace(/,$/, "");
                 const eq = tok.indexOf("=");
                 if (eq > 0)
                     params[tok.substring(0, eq).toLowerCase()] = tok.substring(eq + 1);

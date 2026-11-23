@@ -233,3 +233,29 @@ it.each(DEVICES)("matches ngspice on an imported %s", async (_kind, netlist, nam
         expect(Math.abs(sim - spice), report.join("; ")).toBeLessThan(Math.max(0.02 * Math.abs(spice), 5e-3));
     }
 });
+
+it("imports a current source with SPICE's direction", async () => {
+    // SPICE drives the current from n+ through the source to n-, so it pulls
+    // node a down through the resistor
+    const netlist = `
+* current source into a resistor
+.subckt itest a
+i1 a 0 dc 1m
+r1 a 0 1k
+.ends
+`;
+    const { app, nl, voltage } = await importCircuit(netlist);
+    vi.useFakeTimers();
+    const timeStep = 1e-6, stop = 20e-3;
+    startSimulator(app, timeStep);
+    const rows = runSimulator(app, stop, 5, () => nl.extList.map((_, j) => voltage(j)));
+    vi.useRealTimers();
+
+    const out = join(tmpdir(), "spice-import-isrc");
+    writeFileSync(out + ".cir", flatten(netlist) +
+        `\n.tran ${timeStep} ${stop}\n.control\nrun\nwrdata ${out}.spice v(a)\n.endc\n.end\n`);
+    execFileSync("ngspice", ["-b", out + ".cir"], { stdio: ["ignore", "pipe", "pipe"] });
+    const spice = readWrdata(readFileSync(out + ".spice", "utf8")).at(-1)![1];
+    const sim = rows.at(-1)![1];
+    expect(sim, `circuitjs ${sim} V, ngspice ${spice} V`).toBeCloseTo(spice, 3);
+});
